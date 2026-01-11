@@ -168,59 +168,166 @@ class _AddReceiptScreenState extends State<AddReceiptScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Analyserer kvittering'), actions: [
-        IconButton(
-          tooltip: 'Oversikt',
-          icon: const Icon(Icons.list),
-          onPressed: () async {
-            // Navigate to Overview screen
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (context) => const OverviewScreen()),
-            );
-          },
-        ),
-      ]),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (image != null) Image.file(image!, height: 220),
-            const SizedBox(height: 16),
-
-            if (isAnalyzing)
-              const Text(
-                'Analyserer kvittering...',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-
-            if (errorMessage != null) ...[
-              const SizedBox(height: 16),
-              Text(
-                errorMessage!,
-                style: const TextStyle(color: Colors.red),
-              ),
-            ],
-
-            if (aiResult != null) ...[
-              const SizedBox(height: 16),
-              const Text(
-                'AI-resultat:',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 8),
-              Expanded(
-                child: SingleChildScrollView(
-                  child: Text(
-                    const JsonEncoder.withIndent('  ').convert(aiResult),
-                  ),
+      appBar: AppBar(
+        title: const Text('Analyser kvittering'),
+        actions: [
+          IconButton(
+            tooltip: 'Oversikt',
+            icon: const Icon(Icons.list),
+            onPressed: () async {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const OverviewScreen()),
+              );
+            },
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Image preview card
+              Card(
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                clipBehavior: Clip.hardEdge,
+                elevation: 2,
+                child: Container(
+                  height: 260,
+                  color: Theme.of(context).colorScheme.surfaceVariant,
+                  child: image != null
+                      ? Image.file(image!, fit: BoxFit.cover, width: double.infinity)
+                      : Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.camera_alt_outlined, size: 56, color: Colors.grey[500]),
+                              const SizedBox(height: 8),
+                              Text('Ingen bilde valgt', style: Theme.of(context).textTheme.bodyMedium),
+                            ],
+                          ),
+                        ),
                 ),
               ),
+              const SizedBox(height: 14),
+
+              // Analysis / loading card
+              if (isAnalyzing)
+                Card(
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(children: [
+                          const SizedBox(width: 36, height: 36, child: CircularProgressIndicator(strokeWidth: 3)),
+                          const SizedBox(width: 12),
+                          Expanded(child: Text('Analyserer kvittering...', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600))),
+                        ]),
+                        const SizedBox(height: 12),
+                        const LinearProgressIndicator(minHeight: 6),
+                        const SizedBox(height: 8),
+                        Text('Vent et øyeblikk mens AI analyserer bildet.', style: Theme.of(context).textTheme.bodySmall),
+                      ],
+                    ),
+                  ),
+                ),
+
+              if (errorMessage != null) ...[
+                const SizedBox(height: 12),
+                Card(
+                  color: Theme.of(context).colorScheme.errorContainer,
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Row(children: [
+                      const Icon(Icons.error_outline, color: Colors.redAccent),
+                      const SizedBox(width: 8),
+                      Expanded(child: Text(errorMessage!, style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer))),
+                    ]),
+                  ),
+                ),
+              ],
+
+              const SizedBox(height: 12),
+
+              // AI result area
+              if (aiResult != null) ...[
+                Card(
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  elevation: 2,
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Text('AI - Sammendrag', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
+                              const SizedBox(height: 6),
+                              Text('Rask oversikt over nøkkeltall', style: Theme.of(context).textTheme.bodySmall),
+                            ]),
+                            Row(children: [
+                              IconButton(onPressed: () { /* copy JSON */ }, icon: const Icon(Icons.copy_outlined)),
+                              IconButton(onPressed: () { /* share */ }, icon: const Icon(Icons.share_outlined)),
+                            ])
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Row(children: [
+                          _statPill('Totalt', '${aiResult?['total'] ?? '-'} kr', context),
+                          const SizedBox(width: 12),
+                          _statPill('Spar', '${aiResult?['saved_amount'] ?? '-'} kr', context),
+                        ]),
+                        const SizedBox(height: 12),
+                        ExpansionTile(
+                          title: const Text('Detaljer (vis JSON)'),
+                          children: [
+                            Container(
+                              width: double.infinity,
+                              color: Theme.of(context).colorScheme.surfaceVariant,
+                              padding: const EdgeInsets.all(12),
+                              child: SingleChildScrollView(
+                                scrollDirection: Axis.horizontal,
+                                child: SelectableText(const JsonEncoder.withIndent('  ').convert(aiResult), style: Theme.of(context).textTheme.bodySmall),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Ferdig')),
+                          const SizedBox(width: 8),
+                          FilledButton(onPressed: () => Navigator.pop(context), child: const Text('Legg til i oversikt')),
+                        ])
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+
+              // Spacer if content small
+              const SizedBox(height: 12),
             ],
-          ],
+          ),
         ),
       ),
+    );
+  }
+
+  Widget _statPill(String label, String value, BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(color: Theme.of(context).colorScheme.primaryContainer, borderRadius: BorderRadius.circular(10)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(label, style: Theme.of(context).textTheme.bodySmall),
+        const SizedBox(height: 4),
+        Text(value, style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
+      ]),
     );
   }
 }
