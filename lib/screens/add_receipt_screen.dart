@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:convert';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -95,8 +96,8 @@ class _AddReceiptScreenState extends State<AddReceiptScreen> {
       request.files.add(file);
 
       // Add a timeout so the UI doesn't hang indefinitely
-      final streamedResponse =
-          await request.send().timeout(const Duration(seconds: 30));
+        final streamedResponse =
+          await request.send().timeout(const Duration(seconds: 60));
       final responseBody = await streamedResponse.stream.bytesToString();
 
       // Debug log for server response
@@ -138,6 +139,10 @@ class _AddReceiptScreenState extends State<AddReceiptScreen> {
           errorMessage = 'Kunne ikke parse serverrespons';
         });
       }
+    } on TimeoutException catch (_) {
+      setState(() {
+        errorMessage = 'Tidsavbrudd: analysen tok for lang tid. Prøv igjen eller sjekk nettverk.';
+      });
     } catch (e) {
       setState(() {
         errorMessage = 'Klarte ikke analysere kvitteringen: ${e.toString()}';
@@ -242,10 +247,24 @@ class _AddReceiptScreenState extends State<AddReceiptScreen> {
                   color: Theme.of(context).colorScheme.errorContainer,
                   child: Padding(
                     padding: const EdgeInsets.all(12),
-                    child: Row(children: [
-                      const Icon(Icons.error_outline, color: Colors.redAccent),
-                      const SizedBox(width: 8),
-                      Expanded(child: Text(errorMessage!, style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer))),
+                    child: Column(children: [
+                      Row(children: [
+                        const Icon(Icons.error_outline, color: Colors.redAccent),
+                        const SizedBox(width: 8),
+                        Expanded(child: Text(errorMessage!, style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer))),
+                      ]),
+                      const SizedBox(height: 8),
+                      Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Avbryt')),
+                        const SizedBox(width: 8),
+                        FilledButton(onPressed: () {
+                          setState(() {
+                            errorMessage = null;
+                            isAnalyzing = true;
+                          });
+                          sendImageToBackend();
+                        }, child: const Text('Prøv igjen')),
+                      ])
                     ]),
                   ),
                 ),
