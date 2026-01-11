@@ -126,11 +126,68 @@ class _OverviewScreenState extends State<OverviewScreen> {
     return s;
   }
 
+  // Compute a simple health score (1-100) based on categories found in receipts.
+  // This is purely client-side UI logic for display; it doesn't change backend.
+  int computeReceiptHealth(Map<String, dynamic> raw) {
+    // base score
+    double score = 100.0;
+    try {
+      final cats = <String>[];
+      if (raw['categories'] != null && raw['categories'] is List) {
+        cats.addAll((raw['categories'] as List).map((e) => e.toString()));
+      }
+      // also try items categories
+      if (raw['items'] != null && raw['items'] is List) {
+        for (final it in raw['items']) {
+          try {
+            if (it['category'] != null) cats.add(it['category'].toString());
+          } catch (_) {}
+        }
+      }
+
+      // penalties
+      for (final c in cats) {
+        final lc = c.toLowerCase();
+        if (lc.contains('alkohol')) score -= 20;
+        if (lc.contains('snus')) score -= 25;
+        if (lc.contains('snacks') || lc.contains('godteri')) score -= 15;
+        if (lc.contains('frossen') || lc.contains('pizza')) score -= 10;
+      }
+    } catch (_) {}
+    if (score < 1) score = 1;
+    if (score > 100) score = 100;
+    return score.toInt();
+  }
+
+  int computeOverallHealth() {
+    if (receipts == null || receipts!.isEmpty) return 100;
+    int sum = 0;
+    int count = 0;
+    for (final r in receipts!) {
+      try {
+        final raw = r['raw_json'] ?? r['raw'] ?? r;
+        final h = computeReceiptHealth(Map<String, dynamic>.from(raw as Map));
+        sum += h;
+        count += 1;
+      } catch (_) {}
+    }
+    if (count == 0) return 100;
+    return (sum / count).round();
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Oversikt')),
+      appBar: AppBar(title: const Text('Oversikt'), actions: [
+        IconButton(
+          tooltip: 'Historikk',
+          icon: const Icon(Icons.history),
+          onPressed: () {
+            Navigator.push(context, MaterialPageRoute(builder: (_) => const HistoryScreen()));
+          },
+        ),
+      ]),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -173,11 +230,18 @@ class _OverviewScreenState extends State<OverviewScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('Period: ${ranges[range]}', style: theme.textTheme.bodyLarge),
+                              Text('Period: ${ranges[range]}', style: theme.textTheme.bodyLarge),
                             const SizedBox(height: 8),
-                            Text('Kvitteringer: ${aggregates?['count'] ?? 0}', style: theme.textTheme.bodyMedium),
+                              Text('Kvitteringer: ${aggregates?['count'] ?? 0}', style: theme.textTheme.bodyMedium),
                             const SizedBox(height: 4),
-                            Text('Spar totalt: ${aggregates?['total_saved'] ?? 0}', style: theme.textTheme.bodyMedium),
+                              Text('Spar totalt: ${aggregates?['total_saved'] ?? 0}', style: theme.textTheme.bodyMedium),
+                              const SizedBox(height: 12),
+                              // compact health indicator
+                              Row(children: [
+                                const Text('Sunnhet:', style: TextStyle(fontWeight: FontWeight.w600)),
+                                const SizedBox(width: 8),
+                                _HealthCircle(score: computeOverallHealth()),
+                              ]),
                           ],
                         ),
                       ),
@@ -276,3 +340,36 @@ class _DonutPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
+
+class _HealthCircle extends StatelessWidget {
+  final int score; // 1-100
+  const _HealthCircle({required this.score, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final pct = (score.clamp(0, 100)) / 100.0;
+    Color color;
+    if (score >= 75) color = Colors.green;
+    else if (score >= 50) color = Colors.orange;
+    else color = Colors.red;
+
+    return SizedBox(
+      width: 56,
+      height: 56,
+      child: Stack(alignment: Alignment.center, children: [
+        SizedBox(
+          width: 48,
+          height: 48,
+          child: CircularProgressIndicator(value: pct, strokeWidth: 6, color: color, backgroundColor: Colors.grey.shade200),
+        ),
+        Column(mainAxisSize: MainAxisSize.min, children: [
+          Text('$score', style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
+          Text('sunn', style: Theme.of(context).textTheme.bodySmall)
+        ])
+      ]),
+    );
+  }
+}
+
+// Import history screen
+import 'history_screen.dart';
