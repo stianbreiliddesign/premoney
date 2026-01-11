@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import '../local_storage.dart';
 
 class OverviewScreen extends StatefulWidget {
   const OverviewScreen({super.key});
@@ -16,6 +17,7 @@ class _OverviewScreenState extends State<OverviewScreen> {
   bool loading = false;
   Map<String, dynamic>? aggregates;
   List<dynamic>? receipts;
+  Map<String, double> categorySums = {};
 
   final String baseUrl = 'https://receipt-ai-backend.onrender.com/receipts';
 
@@ -32,7 +34,23 @@ class _OverviewScreenState extends State<OverviewScreen> {
   @override
   void initState() {
     super.initState();
-    fetchOverview();
+    () async {
+      try {
+        await initLocalStorage();
+      } catch (_) {}
+      await fetchOverview(detail: true);
+      if ((receipts == null || receipts!.isEmpty)) {
+        // load local receipts as fallback
+        final local = getLocalReceipts();
+        if (local.isNotEmpty) {
+          setState(() {
+            receipts = local;
+            aggregates = {'count': local.length, 'total_spent': null, 'total_saved': null};
+          });
+          _computeCategorySums();
+        }
+      }
+    }();
   }
 
   Future<void> fetchOverview({bool detail = false}) async {
@@ -51,6 +69,7 @@ class _OverviewScreenState extends State<OverviewScreen> {
           aggregates = data['aggregates'] ?? data;
           receipts = data['receipts'] ?? [];
         });
+        _computeCategorySums();
       } else {
         // ignore: avoid_print
         print('Failed to fetch overview: ${resp.statusCode} ${resp.body}');
@@ -65,87 +84,195 @@ class _OverviewScreenState extends State<OverviewScreen> {
     }
   }
 
+  void _computeCategorySums() {
+    final Map<String, double> sums = {};
+    if (receipts != null) {
+      for (final r in receipts!) {
+        try {
+          final raw = r['raw_json'] ?? r['raw'] ?? r;
+          final items = raw['items'] as List<dynamic>?;
+          if (items != null) {
+            for (final it in items) {
+              final cat = (it['category'] ?? 'annet').toString();
+              final price = (it['price'] is num) ? (it['price'] as num).toDouble() : double.tryParse((it['price'] ?? '0').toString()) ?? 0.0;
+              sums[cat] = (sums[cat] ?? 0.0) + price;
+            }
+          } else {
+            // fallback to receipt total
+            final catList = (r['categories'] as List<dynamic>?)?.map((e) => e.toString())?.toList() ?? ['annet'];
+            final total = (r['total'] is num) ? (r['total'] as num).toDouble() : double.tryParse((r['total'] ?? '0').toString()) ?? 0.0;
+            for (final cat in catList) {
+              sums[cat] = (sums[cat] ?? 0.0) + total;
+            }
+          }
+        } catch (_) {
+          // ignore parse errors per receipt
+        }
+      }
+    }
+    setState(() {
+      categorySums = sums;
+    });
+  }
+
+  double get totalSpent {
+    if (aggregates != null && aggregates!['total_spent'] != null) {
+      final v = aggregates!['total_spent'];
+      if (v is num) return v.toDouble();
+      return double.tryParse(v.toString()) ?? 0.0;
+    }
+    double s = 0.0;
+    categorySums.forEach((k, v) => s += v);
+    return s;
+  }
+
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(title: const Text('Oversikt')),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: DropdownButtonFormField<String>(
-                    value: range,
-                    items: ranges.keys
-                        .map((k) => DropdownMenuItem(value: k, child: Text(ranges[k]!)))
-                        .toList(),
-                    onChanged: (v) {
-                      if (v == null) return;
-                      setState(() => range = v);
-                      fetchOverview();
-                    },
-                    decoration: const InputDecoration(labelText: 'Tidsperiode'),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: DropdownButtonFormField<String>(
-                    value: category,
-                    items: categories
-                        .map((c) => DropdownMenuItem(value: c, child: Text(c == 'all' ? 'Alle' : c)))
-                        .toList(),
-                    onChanged: (v) {
-                      if (v == null) return;
-                      setState(() => category = v);
-                      fetchOverview();
-                    },
-                    decoration: const InputDecoration(labelText: 'Kategori'),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            if (loading) const LinearProgressIndicator(),
-            const SizedBox(height: 8),
-            if (aggregates != null) ...[
-              Text('Kvitteringer: ${aggregates!['count'] ?? 0}'),
-              const SizedBox(height: 8),
-              Text('Totalt brukt: ${aggregates!['total_spent'] ?? 0}'),
-              const SizedBox(height: 4),
-              Text('Totalt spart: ${aggregates!['total_saved'] ?? 0}'),
-              const SizedBox(height: 12),
-            ],
-            ElevatedButton(
-              onPressed: () => fetchOverview(detail: true),
-              child: const Text('Hent detaljer'),
-            ),
-            const SizedBox(height: 12),
-            Expanded(
-              child: receipts == null
-                  ? const Center(child: Text('Ingen data'))
-                  : ListView.builder(
-                      itemCount: receipts!.length,
-                      itemBuilder: (context, i) {
-                        final r = receipts![i];
-                        final created = r['created_at'] ?? r['createdAt'] ?? '';
-                        final total = r['total'] ?? r['raw_json']?['total'] ?? '';
-                        final saved = r['saved_amount'] ?? r['raw_json']?['saved'] ?? '';
-                        final cats = (r['categories'] ?? []).join(', ');
-                        return Card(
-                          child: ListTile(
-                            title: Text('Total: $total  •  Spar: $saved'),
-                            subtitle: Text('Kategorier: $cats\n$created'),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: Column(
+            children: [
+              // Top card with donut
+              Card(
+                elevation: 2,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 160,
+                        height: 160,
+                        child: CustomPaint(
+                          painter: _DonutPainter(),
+                          child: Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  'Totalt',
+                                  style: theme.textTheme.labelSmall,
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  '${totalSpent.toStringAsFixed(0)} kr',
+                                  style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
+                                ),
+                              ],
+                            ),
                           ),
-                        );
-                      },
-                    ),
-            ),
-          ],
+                        ),
+                      ),
+                      const SizedBox(width: 20),
+                      // quick stats
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Period: ${ranges[range]}', style: theme.textTheme.bodyLarge),
+                            const SizedBox(height: 8),
+                            Text('Kvitteringer: ${aggregates?['count'] ?? 0}', style: theme.textTheme.bodyMedium),
+                            const SizedBox(height: 4),
+                            Text('Spar totalt: ${aggregates?['total_saved'] ?? 0}', style: theme.textTheme.bodyMedium),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              // Categories header
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('Kategorier', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                  TextButton(
+                    onPressed: () => fetchOverview(detail: true),
+                    child: const Text('Oppdater'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              // Category list
+              Expanded(
+                child: categorySums.isEmpty
+                    ? Center(child: Text(loading ? 'Laster...' : 'Ingen kvitteringer funnet', style: theme.textTheme.bodyMedium))
+                    : GridView.count(
+                        crossAxisCount: 2,
+                        childAspectRatio: 3,
+                        crossAxisSpacing: 12,
+                        mainAxisSpacing: 12,
+                        children: categorySums.entries.map((e) {
+                          return Container(
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade50,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            child: Row(
+                              children: [
+                                Container(
+                                  width: 10,
+                                  height: 40,
+                                  decoration: BoxDecoration(
+                                    gradient: LinearGradient(colors: [Colors.blue.shade400, Colors.purple.shade400]),
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Text(e.key, style: const TextStyle(fontWeight: FontWeight.w600)),
+                                      const SizedBox(height: 4),
+                                      Text('${e.value.toStringAsFixed(0)} kr', style: theme.textTheme.bodySmall),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        }).toList(),
+                      ),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
+}
+
+class _DonutPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = (size.width / 2) - 6;
+    final basePaint = Paint()
+      ..color = Colors.grey.shade200
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 14
+      ..strokeCap = StrokeCap.round;
+    canvas.drawCircle(center, radius, basePaint);
+
+    final progPaint = Paint()
+      ..shader = const LinearGradient(colors: [Color(0xFF4F46E5), Color(0xFF06B6D4)]).createShader(Rect.fromCircle(center: center, radius: radius))
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 14
+      ..strokeCap = StrokeCap.round;
+
+    // For now show 100% arc (design focus). Could be adapted to budget.
+    final sweep = 2 * 3.1415926535 * 0.85; // 85% filled visually
+    canvas.drawArc(Rect.fromCircle(center: center, radius: radius), -3.14159 / 2, sweep, false, progPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

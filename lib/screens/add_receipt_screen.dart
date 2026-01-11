@@ -6,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 import 'overview_screen.dart';
+import '../local_storage.dart';
 
 class AddReceiptScreen extends StatefulWidget {
   const AddReceiptScreen({super.key});
@@ -117,6 +118,14 @@ class _AddReceiptScreenState extends State<AddReceiptScreen> {
           setState(() {
             aiResult = parsed;
           });
+          // Save locally immediately
+          try {
+            await initLocalStorage();
+          } catch (_) {}
+          try {
+            await saveReceiptLocally(parsed, image!.path);
+          } catch (_) {}
+
           // Send parsed receipt to backend for persistence (non-blocking)
           sendParsedReceiptToBackend(parsed);
         } else {
