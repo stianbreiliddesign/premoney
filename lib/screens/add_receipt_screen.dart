@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
+import 'overview_screen.dart';
 
 class AddReceiptScreen extends StatefulWidget {
   const AddReceiptScreen({super.key});
@@ -158,7 +159,19 @@ class _AddReceiptScreenState extends State<AddReceiptScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Analyserer kvittering')),
+      appBar: AppBar(title: const Text('Analyserer kvittering'), actions: [
+        IconButton(
+          tooltip: 'Oversikt',
+          icon: const Icon(Icons.list),
+          onPressed: () async {
+            // Navigate to Overview screen
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const OverviewScreen()),
+            );
+          },
+        ),
+      ]),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
