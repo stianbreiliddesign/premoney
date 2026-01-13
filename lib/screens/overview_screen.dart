@@ -358,7 +358,26 @@ class _OverviewScreenState extends State<OverviewScreen> {
           aggregates = data['aggregates'] ?? data;
           receipts = data['receipts'] ?? [];
         });
-        _computeCategorySums();
+
+        // If server says there are zero receipts in this period, normalize all totals to 0
+        final intCount = (aggregates != null && aggregates!['count'] != null)
+            ? (aggregates!['count'] is num ? (aggregates!['count'] as num).toInt() : int.tryParse(aggregates!['count'].toString()) ?? 0)
+            : (receipts != null ? receipts!.length : 0);
+        if (intCount == 0) {
+          setState(() {
+            aggregates = {'count': 0, 'total_spent': 0.0, 'total_saved': 0.0};
+            // initialize categorySums to zero for all known categories
+            final Map<String, double> sums = {};
+            for (final k in categories) {
+              if (k == 'all') continue;
+              sums[k] = 0.0;
+            }
+            categorySums = sums;
+            receipts = [];
+          });
+        } else {
+          _computeCategorySums();
+        }
       } else {
         // Log outcome (avoid printing potentially large/secret body)
         // ignore: avoid_print
