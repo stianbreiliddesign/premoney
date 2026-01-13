@@ -44,7 +44,8 @@ class _AddReceiptScreenState extends State<AddReceiptScreen> {
 
   Future<void> openCamera() async {
     try {
-      final XFile? picked = await _picker.pickImage(source: ImageSource.camera, imageQuality: 85);
+      // Request a resized image to reduce upload size and speed up processing
+      final XFile? picked = await _picker.pickImage(source: ImageSource.camera, imageQuality: 75, maxWidth: 1200, maxHeight: 1600);
       if (picked == null) return;
       setState(() {
         image = File(picked.path);
