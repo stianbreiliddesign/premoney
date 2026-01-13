@@ -320,6 +320,33 @@ class _OverviewScreenState extends State<OverviewScreen> {
       loading = true;
     });
     try {
+      // Prefer local receipts (SQLite DB then file-based) so Overview always reflects history.
+      try {
+        await ReceiptDb.init();
+        final dbLocal = await ReceiptDb.getAllReceipts();
+        if (dbLocal.isNotEmpty) {
+          setState(() {
+            receipts = dbLocal;
+            aggregates = {'count': dbLocal.length, 'total_spent': null, 'total_saved': null};
+          });
+          _computeCategorySums();
+          return;
+        }
+      } catch (_) {}
+
+      try {
+        final local = await getLocalReceipts();
+        if (local.isNotEmpty) {
+          setState(() {
+            receipts = local;
+            aggregates = {'count': local.length, 'total_spent': null, 'total_saved': null};
+          });
+          _computeCategorySums();
+          return;
+        }
+      } catch (_) {}
+
+      // No local receipts available, fallback to server-provided aggregates/receipts
       final params = <String, String>{'range': range};
       if (category != 'all') params['category'] = category;
       if (detail) params['detail'] = 'true';
@@ -332,86 +359,17 @@ class _OverviewScreenState extends State<OverviewScreen> {
           receipts = data['receipts'] ?? [];
         });
         _computeCategorySums();
-        // If we have local DB receipts, prefer them for history and aggregates
-        try {
-          await ReceiptDb.init();
-          final dbLocal = await ReceiptDb.getAllReceipts();
-          if (dbLocal.isNotEmpty) {
-            setState(() {
-              receipts = dbLocal;
-              aggregates = {'count': dbLocal.length, 'total_spent': null, 'total_saved': null};
-            });
-            _computeCategorySums();
-          }
-          else {
-            // try file-based local receipts as fallback
-            try {
-              final local = await getLocalReceipts();
-              if (local.isNotEmpty) {
-                setState(() {
-                  receipts = local;
-                  aggregates = {'count': local.length, 'total_spent': null, 'total_saved': null};
-                });
-                _computeCategorySums();
-              }
-            } catch (_) {}
-          }
-        } catch (_) {}
       } else {
         // Log outcome (avoid printing potentially large/secret body)
         // ignore: avoid_print
         print('Failed to fetch overview: ${resp.statusCode}');
-        // If server reports DB misconfiguration, surface a friendly message and fall back to local data
         if (resp.statusCode == 503) {
           if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Server utilgjengelig (Database ikke konfigurert). Viser lokale kvitteringer.')));
-        }
-        // Try local DB fallback, then file fallback
-        try {
-          await ReceiptDb.init();
-          final dbLocal = await ReceiptDb.getAllReceipts();
-          if (dbLocal.isNotEmpty) {
-            setState(() {
-              receipts = dbLocal;
-              aggregates = {'count': dbLocal.length, 'total_spent': null, 'total_saved': null};
-            });
-            _computeCategorySums();
-          } else {
-            final local = await getLocalReceipts();
-            if (local.isNotEmpty) {
-              setState(() {
-                receipts = local;
-                aggregates = {'count': local.length, 'total_spent': null, 'total_saved': null};
-              });
-              _computeCategorySums();
-            }
-          }
-        } catch (_) {
-          try {
-            final local = await getLocalReceipts();
-            if (local.isNotEmpty) {
-              setState(() {
-                receipts = local;
-                aggregates = {'count': local.length, 'total_spent': null, 'total_saved': null};
-              });
-              _computeCategorySums();
-            }
-          } catch (_) {}
         }
       }
     } catch (e) {
       // ignore: avoid_print
       print('Error fetching overview: $e');
-      // Try local fallback when network or server fails
-      try {
-        final local = await getLocalReceipts();
-        if (local.isNotEmpty) {
-          setState(() {
-            receipts = local;
-            aggregates = {'count': local.length, 'total_spent': null, 'total_saved': null};
-          });
-          _computeCategorySums();
-        }
-      } catch (_) {}
     } finally {
       setState(() {
         loading = false;
@@ -482,14 +440,15 @@ class _OverviewScreenState extends State<OverviewScreen> {
   }
 
   double get totalSpent {
-    if (aggregates != null && aggregates!['total_spent'] != null) {
-      final v = aggregates!['total_spent'];
-      if (v is num) return v.toDouble();
-      return double.tryParse(v.toString()) ?? 0.0;
-    }
+    // Always compute total from local receipts/category sums so Overview reflects history.
     double s = 0.0;
-    categorySums.forEach((k, v) => s += v);
-    return s;
+    try {
+      // Prefer categorySums (already computed from receipts)
+      categorySums.forEach((k, v) => s += v);
+      return s;
+    } catch (_) {
+      return 0.0;
+    }
   }
 
   // Compute a simple health score (1-100) based on categories found in receipts.

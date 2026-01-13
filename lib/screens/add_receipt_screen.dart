@@ -147,6 +147,40 @@ class _AddReceiptScreenState extends State<AddReceiptScreen> {
         return;
       }
 
+      // Compute saved_amount from per-item discounts (if provided by AI)
+      try {
+        double sumDiscounts = 0.0;
+        double sumPrices = 0.0;
+        for (final it in items) {
+          try {
+            final p = it['price'];
+            double priceNum = 0.0;
+            if (p is num) priceNum = p.toDouble();
+            else {
+              final s = (p ?? '').toString();
+              final m = RegExp(r'[0-9]+(?:[.,][0-9]{1,2})?').firstMatch(s);
+              if (m != null) priceNum = double.tryParse(m.group(0)!.replaceAll(',', '.')) ?? 0.0;
+            }
+            sumPrices += priceNum;
+
+            final d = it['discount'];
+            double discNum = 0.0;
+            if (d != null) {
+              if (d is num) discNum = d.toDouble();
+              else {
+                final sd = d.toString();
+                final md = RegExp(r'[0-9]+(?:[.,][0-9]{1,2})?').firstMatch(sd);
+                if (md != null) discNum = double.tryParse(md.group(0)!.replaceAll(',', '.')) ?? 0.0;
+              }
+            }
+            sumDiscounts += discNum;
+          } catch (_) {}
+        }
+        // Attach computed fields so downstream saving and UI can read them
+        parsed['saved_amount'] = (parsed['saved_amount'] ?? sumDiscounts);
+        parsed['total'] = (parsed['total'] ?? sumPrices);
+      } catch (_) {}
+
       // Note: we allow items without explicit categories from AI. The overview
       // will attempt name-based heuristics to map missing categories.
 
