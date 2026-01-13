@@ -84,14 +84,43 @@ class _HistoryScreenState extends State<HistoryScreen> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: items.map<Widget>((it) {
                                 final name = (it is Map && it['name'] != null) ? it['name'].toString() : (it.toString());
-                                final price = (it is Map && it['price'] != null) ? it['price'].toString() : '';
+                                final rawPrice = (it is Map && it['price'] != null) ? it['price'] : null;
+                                String priceStr = '';
+                                if (rawPrice != null) {
+                                  try {
+                                    final p = double.tryParse(rawPrice.toString());
+                                    priceStr = p != null ? p.toStringAsFixed(2) : rawPrice.toString();
+                                  } catch (_) {
+                                    priceStr = rawPrice.toString();
+                                  }
+                                }
+
+                                final rawQty = (it is Map && it['quantity'] != null) ? it['quantity'] : null;
+                                final qty = rawQty != null ? (int.tryParse(rawQty.toString()) ?? 1) : 1;
+
+                                final rawUnit = (it is Map && it['unit_price'] != null) ? it['unit_price'] : null;
+                                String unitStr = '';
+                                double? unitDouble;
+                                if (rawUnit != null) {
+                                  unitDouble = double.tryParse(rawUnit.toString());
+                                  if (unitDouble != null) unitStr = unitDouble.toStringAsFixed(2);
+                                  else unitStr = rawUnit.toString();
+                                }
+
+                                String rightText = '';
+                                if (unitStr.isNotEmpty && qty > 1) {
+                                  rightText = '$qty x $unitStr kr = ${priceStr.isNotEmpty ? priceStr + ' kr' : ''}';
+                                } else if (priceStr.isNotEmpty) {
+                                  rightText = '$priceStr kr';
+                                }
+
                                 return Padding(
                                   padding: const EdgeInsets.symmetric(vertical: 4),
                                   child: Row(
                                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                     children: [
                                       Expanded(child: Text(name)),
-                                      if (price != '') Text('$price kr', style: Theme.of(context).textTheme.bodySmall),
+                                      if (rightText != '') Text(rightText, style: Theme.of(context).textTheme.bodySmall),
                                     ],
                                   ),
                                 );
