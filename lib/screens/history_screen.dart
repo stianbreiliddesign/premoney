@@ -91,9 +91,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
                                 final price = rawPrice != null ? (double.tryParse(rawPrice.toString()) ?? 0.0) : 0.0;
                                 final priceStr = price.toStringAsFixed(2);
 
-                                // quantity & unit price
+                                // quantity & unit price (support decimal quantity for weight items)
                                 final qtyRaw = item['quantity'];
-                                final qty = qtyRaw != null ? (int.tryParse(qtyRaw.toString()) ?? 1) : 1;
+                                final qty = qtyRaw != null ? (double.tryParse(qtyRaw.toString()) ?? 1.0) : 1.0;
                                 final rawUnit = item['unit_price'];
                                 final unit = rawUnit != null ? (double.tryParse(rawUnit.toString()) ?? 0.0) : 0.0;
 
@@ -103,8 +103,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
                                 // Build subtitle parts
                                 final parts = <String>[];
-                                if (qty > 1) parts.add('Antall: $qty');
-                                if (unit > 0) parts.add('Stykkpris: ${unit.toStringAsFixed(2)} kr');
+                                final isWhole = (qty % 1.0) == 0.0;
+                                if (!isWhole) parts.add('Vekt: ${qty.toStringAsFixed(3)} kg');
+                                else if (qty > 1) parts.add('Antall: ${qty.toInt()}');
+                                if (unit > 0) {
+                                  final unitLabel = !isWhole ? 'kr/kg' : 'kr';
+                                  parts.add('Stykkpris: ${unit.toStringAsFixed(2)} $unitLabel');
+                                }
                                 if (disc > 0) parts.add('Rabatt: ${disc.toStringAsFixed(2)} kr');
 
                                 return Padding(
