@@ -6,8 +6,9 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
-import 'overview_screen.dart';
+
 import '../local_storage.dart';
+import '../services/receipt_db.dart';
 
 class AddReceiptScreen extends StatefulWidget {
   const AddReceiptScreen({super.key});
@@ -21,41 +22,61 @@ class _AddReceiptScreenState extends State<AddReceiptScreen> {
   bool isAnalyzing = false;
   String? errorMessage;
   Map<String, dynamic>? aiResult;
+  // Development helper: keep AI result visible after analysis instead of
+  // immediately returning to Overview. Toggle to `false` to restore
+  // previous behaviour.
+  final bool devShowAiResultBeforeClose = true;
 
-  static const backendUrl =
-      'https://receipt-ai-backend.onrender.com/analyze-image';
+  // Production backend on Render. Change if you want to point to local dev.
+  final String backendUrl = 'https://receipt-ai-backend.onrender.com/analyze-image';
+  final String receiptsUrl = 'https://receipt-ai-backend.onrender.com/receipts';
 
-  String get receiptsUrl => backendUrl.replaceAll('/analyze-image', '/receipts');
-
-  final ImagePicker picker = ImagePicker();
-
-  @override
-  void initState() {
-    super.initState();
-    openCamera();
+  Future<bool> _checkServerHealth() async {
+    try {
+      final uri = Uri.parse(backendUrl.replaceFirst('/analyze-image', '/'));
+      final resp = await http.get(uri).timeout(const Duration(seconds: 2));
+      return resp.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
   }
+  final ImagePicker _picker = ImagePicker();
 
   Future<void> openCamera() async {
-    final XFile? photo = await picker.pickImage(
-      source: ImageSource.camera,
-      imageQuality: 85,
-    );
-
-    if (photo == null) {
-      Navigator.pop(context);
-      return;
+    try {
+      final XFile? picked = await _picker.pickImage(source: ImageSource.camera, imageQuality: 85);
+      if (picked == null) return;
+      setState(() {
+        image = File(picked.path);
+        errorMessage = null;
+        aiResult = null;
+      });
+      await sendImageToBackend();
+    } catch (e) {
+      setState(() {
+        errorMessage = 'Kunne ikke åpne kamera: ${e.toString()}';
+      });
     }
-
-    setState(() {
-      image = File(photo.path);
-    });
-
-    await sendImageToBackend();
   }
 
   Future<void> sendImageToBackend() async {
     if (image == null) return;
-
+    // Check server health first; if server is down, save locally and return to overview.
+    final healthOk = await _checkServerHealth();
+    if (!healthOk) {
+      try {
+        await ReceiptDb.insertReceipt({'raw': {'items': [], 'total': null, 'note': 'Saved without parse - server unreachable'}}, image?.path);
+      } catch (_) {
+        try {
+          await saveReceiptLocally({'raw': {'items': [], 'total': null, 'note': 'Saved without parse - server unreachable'}}, image?.path);
+        } catch (_) {}
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Server utilgjengelig — lagret lokalt')));
+        Navigator.pop(context, true);
+      }
+      return;
+    }
     setState(() {
       isAnalyzing = true;
       errorMessage = null;
@@ -63,9 +84,9 @@ class _AddReceiptScreenState extends State<AddReceiptScreen> {
     });
 
     try {
-      final request = http.MultipartRequest('POST', Uri.parse(backendUrl));
+      final uri = Uri.parse(backendUrl);
+      final request = http.MultipartRequest('POST', uri);
 
-      // Determine a sensible MIME type from extension (fallback)
       final ext = image!.path.split('.').last.toLowerCase();
       String mimeType;
       switch (ext) {
@@ -88,19 +109,15 @@ class _AddReceiptScreenState extends State<AddReceiptScreen> {
       }
 
       final parts = mimeType.split('/');
-      final file = await http.MultipartFile.fromPath(
+      final multipartFile = await http.MultipartFile.fromPath(
         'image',
         image!.path,
         contentType: MediaType(parts[0], parts[1]),
       );
-      request.files.add(file);
+      request.files.add(multipartFile);
 
-      // Add a timeout so the UI doesn't hang indefinitely
-        final streamedResponse =
-          await request.send().timeout(const Duration(seconds: 60));
+      final streamedResponse = await request.send().timeout(const Duration(seconds: 60));
       final responseBody = await streamedResponse.stream.bytesToString();
-
-      // Debug log for server response
       // ignore: avoid_print
       print('Backend status: ${streamedResponse.statusCode}');
       // ignore: avoid_print
@@ -113,35 +130,102 @@ class _AddReceiptScreenState extends State<AddReceiptScreen> {
         return;
       }
 
-      try {
-        final parsed = jsonDecode(responseBody);
-        if (parsed is Map<String, dynamic>) {
-          setState(() {
-            aiResult = parsed;
-          });
-          // Save locally immediately
-          try {
-            await initLocalStorage();
-          } catch (_) {}
-          try {
-            await saveReceiptLocally(parsed, image!.path);
-          } catch (_) {}
+      final parsed = jsonDecode(responseBody);
+      if (parsed is! Map<String, dynamic>) {
+        setState(() {
+          errorMessage = 'Ugyldig responsformat fra serveren';
+        });
+        return;
+      }
 
-          // Send parsed receipt to backend for persistence (non-blocking)
-          sendParsedReceiptToBackend(parsed);
-        } else {
+      final raw = parsed['raw'] ?? parsed;
+      final items = (raw['items'] is List) ? List.from(raw['items'] as List) : null;
+      if (items == null || items.isEmpty) {
+        setState(() {
+          errorMessage = 'AI svarte uten linjeelementer. Prøv igjen.';
+        });
+        return;
+      }
+
+      // Note: we allow items without explicit categories from AI. The overview
+      // will attempt name-based heuristics to map missing categories.
+
+      // Attempt to save parsed receipt on server
+      try {
+        final saveResp = await http
+            .post(Uri.parse(receiptsUrl), headers: {"Content-Type": "application/json"}, body: jsonEncode(parsed))
+            .timeout(const Duration(seconds: 15));
+        // ignore: avoid_print
+        print('Save receipt status: ${saveResp.statusCode}');
+        // ignore: avoid_print
+        print('Save receipt body: ${saveResp.body}');
+        if (saveResp.statusCode >= 200 && saveResp.statusCode < 300) {
+          // Server saved successfully — still persist locally so history reflects all receipts
+          try {
+            await ReceiptDb.insertReceipt(parsed, image?.path);
+          } catch (_) {}
           setState(() {
-            errorMessage = 'Ugyldig responsformat fra serveren';
+            aiResult = raw as Map<String, dynamic>;
           });
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Kvittering lagret på serveren')));
+            if (!devShowAiResultBeforeClose) Navigator.pop(context, true);
+          }
+        } else {
+          // If the server reports DB not configured (503) or other failures, save locally as a fallback.
+          final body = saveResp.body;
+          if (saveResp.statusCode == 503 || body.toLowerCase().contains('database not configured')) {
+            try {
+              await ReceiptDb.insertReceipt(parsed, image?.path);
+            } catch (_) {
+              try {
+                await saveReceiptLocally(parsed, image?.path);
+              } catch (_) {}
+            }
+            setState(() {
+              aiResult = raw as Map<String, dynamic>;
+            });
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Serverlagring mislyktes — lagret lokalt')));
+              if (!devShowAiResultBeforeClose) Navigator.pop(context, true);
+            }
+          } else {
+            setState(() {
+              errorMessage = 'Lagret mislyktes: ${saveResp.statusCode} ${saveResp.body}';
+            });
+          }
         }
       } catch (e) {
-        setState(() {
-          errorMessage = 'Kunne ikke parse serverrespons';
-        });
+        // Network or other error while saving — try SQLite DB first, then fallback to file.
+        try {
+          await ReceiptDb.insertReceipt(parsed, image?.path);
+          setState(() {
+            aiResult = raw as Map<String, dynamic>;
+          });
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Kunne ikke lagre på server: ${e.toString()}. Lagret lokalt.')));
+            if (!devShowAiResultBeforeClose) Navigator.pop(context, true);
+          }
+        } catch (_) {
+          try {
+            await saveReceiptLocally(parsed, image?.path);
+            setState(() {
+              aiResult = raw as Map<String, dynamic>;
+            });
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Kunne ikke lagre på server: ${e.toString()}. Lagret lokalt (fil).')));
+              if (!devShowAiResultBeforeClose) Navigator.pop(context, true);
+            }
+          } catch (_) {
+            setState(() {
+              errorMessage = 'Kunne ikke lagre kvittering på server: ${e.toString()}';
+            });
+          }
+        }
       }
     } on TimeoutException catch (_) {
       setState(() {
-        errorMessage = 'Tidsavbrudd: analysen tok for lang tid. Prøv igjen eller sjekk nettverk.';
+        errorMessage = 'Tidsavbrudd ved opplasting. Prøv igjen.';
       });
     } catch (e) {
       setState(() {
@@ -157,8 +241,7 @@ class _AddReceiptScreenState extends State<AddReceiptScreen> {
   Future<void> sendParsedReceiptToBackend(Map<String, dynamic> parsed) async {
     try {
       final resp = await http
-          .post(Uri.parse(receiptsUrl),
-              headers: {"Content-Type": "application/json"}, body: jsonEncode(parsed))
+          .post(Uri.parse(receiptsUrl), headers: {"Content-Type": "application/json"}, body: jsonEncode(parsed))
           .timeout(const Duration(seconds: 15));
       // ignore: avoid_print
       print('Save receipt status: ${resp.statusCode}');
@@ -170,30 +253,20 @@ class _AddReceiptScreenState extends State<AddReceiptScreen> {
     }
   }
 
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Analyser kvittering'),
-        actions: [
-          IconButton(
-            tooltip: 'Oversikt',
-            icon: const Icon(Icons.list),
-            onPressed: () async {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const OverviewScreen()),
-              );
-            },
-          ),
-        ],
       ),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
               // Image preview card
               Card(
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
@@ -201,7 +274,7 @@ class _AddReceiptScreenState extends State<AddReceiptScreen> {
                 elevation: 2,
                 child: Container(
                   height: 260,
-                  color: Theme.of(context).colorScheme.surfaceVariant,
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
                   child: image != null
                       ? Image.file(image!, fit: BoxFit.cover, width: double.infinity)
                       : Center(
@@ -308,7 +381,7 @@ class _AddReceiptScreenState extends State<AddReceiptScreen> {
                           children: [
                             Container(
                               width: double.infinity,
-                              color: Theme.of(context).colorScheme.surfaceVariant,
+                              color: Theme.of(context).colorScheme.surfaceContainerHighest,
                               padding: const EdgeInsets.all(12),
                               child: SingleChildScrollView(
                                 scrollDirection: Axis.horizontal,
@@ -321,7 +394,7 @@ class _AddReceiptScreenState extends State<AddReceiptScreen> {
                         Row(mainAxisAlignment: MainAxisAlignment.end, children: [
                           TextButton(onPressed: () => Navigator.pop(context), child: const Text('Ferdig')),
                           const SizedBox(width: 8),
-                          FilledButton(onPressed: () => Navigator.pop(context), child: const Text('Legg til i oversikt')),
+                          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Legg til i oversikt')),
                         ])
                       ],
                     ),
@@ -333,8 +406,15 @@ class _AddReceiptScreenState extends State<AddReceiptScreen> {
               const SizedBox(height: 12),
             ],
           ),
+          ),
         ),
       ),
+        floatingActionButton: FloatingActionButton(
+          tooltip: 'Åpne kamera',
+          onPressed: openCamera,
+          child: const Icon(Icons.camera_alt),
+        ),
+        floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
     );
   }
 

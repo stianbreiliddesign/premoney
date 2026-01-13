@@ -94,3 +94,13 @@ class HomeScreen extends StatelessWidget {
     );
   }
 }
+
+// Backwards-compatible alias used by tests
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const MoneyEyeApp();
+  }
+}

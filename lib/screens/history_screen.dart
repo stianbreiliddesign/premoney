@@ -1,7 +1,10 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import '../local_storage.dart';
+import '../services/receipt_db.dart';
 
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
@@ -12,34 +15,58 @@ class HistoryScreen extends StatefulWidget {
 
 class _HistoryScreenState extends State<HistoryScreen> {
   List<Map<String, dynamic>> entries = [];
+  bool _changed = false;
 
   @override
   void initState() {
     super.initState();
+    _loadEntries();
+  }
+
+  Future<void> _loadEntries() async {
     try {
-      final local = getLocalReceipts();
-      setState(() => entries = local);
+      try {
+        await ReceiptDb.init();
+        final local = await ReceiptDb.getAllReceipts();
+        setState(() => entries = local);
+      } catch (_) {
+        await initLocalStorage();
+        final local = await getLocalReceipts();
+        setState(() => entries = local);
+      }
     } catch (_) {}
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Historikk')),
+      appBar: AppBar(
+        title: const Text('Historikk'),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => Navigator.of(context).pop(_changed),
+        ),
+      ),
       body: Padding(
         padding: const EdgeInsets.all(12),
         child: entries.isEmpty
             ? Center(child: Text('Ingen lagrede kvitteringer', style: Theme.of(context).textTheme.bodyLarge))
             : ListView.separated(
                 itemCount: entries.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 8),
+                separatorBuilder: (context, index) => const SizedBox(height: 8),
                 itemBuilder: (context, i) {
                   final e = entries[i];
                   final created = e['createdAt'] ?? e['created_at'] ?? '';
-                  final raw = e['raw'] ?? e['raw_json'] ?? {};
-                  final title = (raw is Map && raw['merchant'] != null) ? raw['merchant'].toString() : 'Kvittering ${i + 1}';
-                  final total = (raw is Map && raw['total'] != null) ? raw['total'].toString() : '';
-                  final summary = (raw is Map && raw['summary'] != null) ? raw['summary'].toString() : null;
+                    // Support both formats:
+                    // - legacy: parsed result stored directly (top-level keys like 'items', 'total')
+                    // - wrapped: parsed result stored under 'raw' or 'raw_json'
+                      final rawCandidate = e['raw'] ?? e['raw_json'];
+                      final raw = (rawCandidate is Map) ? rawCandidate : e;
+                  final title = (raw['merchant'] != null) ? raw['merchant'].toString() : 'Kvittering ${i + 1}';
+                  final total = (raw['total'] != null) ? raw['total'].toString() : '';
+                  final summary = (raw['summary'] != null) ? raw['summary'].toString() : null;
+
+                  final items = (raw['items'] is List) ? List.from(raw['items'] as List) : null;
 
                   return Card(
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -50,14 +77,96 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       ]),
                       subtitle: Text(created.toString()),
                       children: [
-                        if (summary != null) Padding(padding: const EdgeInsets.all(12), child: Text(summary)),
-                        if (summary == null) Padding(padding: const EdgeInsets.all(12), child: SelectableText(const JsonEncoder.withIndent('  ').convert(raw))),
+                        if (items != null && items.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: items.map<Widget>((it) {
+                                final name = (it is Map && it['name'] != null) ? it['name'].toString() : (it.toString());
+                                final price = (it is Map && it['price'] != null) ? it['price'].toString() : '';
+                                return Padding(
+                                  padding: const EdgeInsets.symmetric(vertical: 4),
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Expanded(child: Text(name)),
+                                      if (price != '') Text('$price kr', style: Theme.of(context).textTheme.bodySmall),
+                                    ],
+                                  ),
+                                );
+                              }).toList(),
+                            ),
+                          )
+                        else if (summary != null)
+                          Padding(padding: const EdgeInsets.all(12), child: Text(summary))
+                        else
+                          Padding(padding: const EdgeInsets.all(12), child: SelectableText(const JsonEncoder.withIndent('  ').convert(raw))),
+
                         Padding(
                           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                           child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
-                            TextButton(onPressed: () {}, child: const Text('Del')),
+                            TextButton(
+                                onPressed: () {}, child: const Text('Del')),
                             const SizedBox(width: 8),
-                            FilledButton(onPressed: () {}, child: const Text('Slett')),
+                            FilledButton(
+                                onPressed: () async {
+                              // capture navigator early to avoid using BuildContext after async gaps
+                              final navigator = Navigator.of(context);
+
+                              final confirm = await showDialog<bool>(
+                                context: context,
+                                builder: (ctx) => AlertDialog(
+                                  title: const Text('Bekreft sletting'),
+                                  content: const Text('Er du sikker på at du vil slette denne kvitteringen?'),
+                                  actions: [
+                                    TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Avbryt')),
+                                    FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Slett')),
+                                  ],
+                                ),
+                              );
+                              if (confirm != true) return;
+
+                              // Remove from local UI list
+                              setState(() {
+                                entries.removeAt(i);
+                                _changed = true;
+                              });
+
+                              // Attempt best-effort backend delete if an `id` exists
+                              try {
+                                final id = e['id'] ?? e['row']?['id'];
+                                if (id != null) {
+                                  final url = Uri.parse('https://receipt-ai-backend.onrender.com/receipts/$id');
+                                  await http.delete(url).timeout(const Duration(seconds: 8));
+                                }
+                              } catch (_) {}
+
+                              // Try best-effort to delete any local image path referenced
+                              try {
+                                final img = (e['imagePath'] ?? e['image'] ?? e['localPath'])?.toString();
+                                if (img != null && img.isNotEmpty) {
+                                  final f = File(img);
+                                  if (await f.exists()) await f.delete();
+                                }
+                              } catch (_) {}
+
+                              // Persist deletion to local storage when possible
+                                try {
+                                final localId = (e['local_id'] ?? e['localId'] ?? e['local-id'])?.toString();
+                                if (localId != null && localId.isNotEmpty) {
+                                  try {
+                                    await ReceiptDb.deleteByLocalId(localId);
+                                  } catch (_) {
+                                    await deleteLocalReceiptByLocalId(localId);
+                                  }
+                                }
+                              } catch (_) {}
+
+                              // Close history and notify Overview to refresh immediately
+                              if (!mounted) return;
+                              navigator.pop(true);
+                            }, child: const Text('Slett')),
                           ]),
                         )
                       ],
