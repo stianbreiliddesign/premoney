@@ -371,9 +371,25 @@ class _OverviewScreenState extends State<OverviewScreen> {
       // ignore: avoid_print
       print('Error fetching overview: $e');
     } finally {
-      setState(() {
-        loading = false;
-      });
+      // Ensure empty-state is normalized: when there are no receipts, show zeros
+      if (receipts == null || receipts!.isEmpty) {
+        final zeroAgg = {'count': 0, 'total_spent': 0.0, 'total_saved': 0.0};
+        setState(() {
+          aggregates = aggregates ?? zeroAgg;
+          // initialize categorySums to zero for all known categories
+          final Map<String, double> sums = {};
+          for (final k in categories) {
+            if (k == 'all') continue;
+            sums[k] = 0.0;
+          }
+          categorySums = sums;
+          loading = false;
+        });
+      } else {
+        setState(() {
+          loading = false;
+        });
+      }
     }
   }
 
