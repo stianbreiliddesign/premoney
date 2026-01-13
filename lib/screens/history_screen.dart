@@ -83,44 +83,46 @@ class _HistoryScreenState extends State<HistoryScreen> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: items.map<Widget>((it) {
-                                final name = (it is Map && it['name'] != null) ? it['name'].toString() : (it.toString());
-                                final rawPrice = (it is Map && it['price'] != null) ? it['price'] : null;
-                                String priceStr = '';
-                                if (rawPrice != null) {
-                                  try {
-                                    final p = double.tryParse(rawPrice.toString());
-                                    priceStr = p != null ? p.toStringAsFixed(2) : rawPrice.toString();
-                                  } catch (_) {
-                                    priceStr = rawPrice.toString();
-                                  }
-                                }
+                                final Map item = (it is Map) ? it : {'name': it.toString()};
+                                final name = (item['name'] ?? '').toString();
 
-                                final rawQty = (it is Map && it['quantity'] != null) ? it['quantity'] : null;
-                                final qty = rawQty != null ? (int.tryParse(rawQty.toString()) ?? 1) : 1;
+                                // price (line total)
+                                final rawPrice = item['price'];
+                                final price = rawPrice != null ? (double.tryParse(rawPrice.toString()) ?? 0.0) : 0.0;
+                                final priceStr = price.toStringAsFixed(2);
 
-                                final rawUnit = (it is Map && it['unit_price'] != null) ? it['unit_price'] : null;
-                                String unitStr = '';
-                                double? unitDouble;
-                                if (rawUnit != null) {
-                                  unitDouble = double.tryParse(rawUnit.toString());
-                                  if (unitDouble != null) unitStr = unitDouble.toStringAsFixed(2);
-                                  else unitStr = rawUnit.toString();
-                                }
+                                // quantity & unit price
+                                final qtyRaw = item['quantity'];
+                                final qty = qtyRaw != null ? (int.tryParse(qtyRaw.toString()) ?? 1) : 1;
+                                final rawUnit = item['unit_price'];
+                                final unit = rawUnit != null ? (double.tryParse(rawUnit.toString()) ?? 0.0) : 0.0;
 
-                                String rightText = '';
-                                if (unitStr.isNotEmpty && qty > 1) {
-                                  rightText = '$qty x $unitStr kr = ${priceStr.isNotEmpty ? priceStr + ' kr' : ''}';
-                                } else if (priceStr.isNotEmpty) {
-                                  rightText = '$priceStr kr';
-                                }
+                                // discount (saved on this line)
+                                final rawDisc = item['discount'];
+                                final disc = rawDisc != null ? (double.tryParse(rawDisc.toString()) ?? 0.0) : 0.0;
+
+                                // Build subtitle parts
+                                final parts = <String>[];
+                                if (qty > 1) parts.add('Antall: $qty');
+                                if (unit > 0) parts.add('Stykkpris: ${unit.toStringAsFixed(2)} kr');
+                                if (disc > 0) parts.add('Rabatt: ${disc.toStringAsFixed(2)} kr');
 
                                 return Padding(
-                                  padding: const EdgeInsets.symmetric(vertical: 4),
-                                  child: Row(
-                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  padding: const EdgeInsets.symmetric(vertical: 6),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
                                     children: [
-                                      Expanded(child: Text(name)),
-                                      if (rightText != '') Text(rightText, style: Theme.of(context).textTheme.bodySmall),
+                                      Row(
+                                        children: [
+                                          Expanded(child: Text(name, style: const TextStyle(fontWeight: FontWeight.w600))),
+                                          Text('${priceStr} kr', style: Theme.of(context).textTheme.bodyMedium),
+                                        ],
+                                      ),
+                                      if (parts.isNotEmpty)
+                                        Padding(
+                                          padding: const EdgeInsets.only(top: 4),
+                                          child: Text(parts.join(' • '), style: Theme.of(context).textTheme.bodySmall),
+                                        ),
                                     ],
                                   ),
                                 );
