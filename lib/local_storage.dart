@@ -67,7 +67,17 @@ Future<List<Map<String, dynamic>>> getLocalReceipts() async {
     final content = await f.readAsString();
     if (content.trim().isEmpty) return [];
     final List<dynamic> list = jsonDecode(content) as List<dynamic>;
-    return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    // Filter out any receipts that were marked hidden (backup of edited receipts)
+    final parsed = list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    return parsed.where((m) {
+      try {
+        final hidden = m['_hidden'] ?? m['hidden'] ?? false;
+        if (hidden is bool) return !hidden;
+        return true;
+      } catch (_) {
+        return true;
+      }
+    }).toList();
   } catch (_) {
     return [];
   }
@@ -82,8 +92,17 @@ Future<void> deleteLocalReceiptByLocalId(String localId) async {
     list.removeWhere((e) {
       try {
         final m = Map<String, dynamic>.from(e as Map);
+        // match by common local id fields
         final id = (m['local_id'] ?? m['localId'] ?? m['local-id'])?.toString();
-        return id == localId;
+        if (id != null && id == localId) return true;
+        // match by DB-saved id stored in `_saved.id` or top-level `id`
+        try {
+          final savedId = (m['_saved'] is Map) ? (m['_saved']['id']) : null;
+          if (savedId != null && savedId.toString() == localId) return true;
+        } catch (_) {}
+        final topId = m['id']?.toString();
+        if (topId != null && topId == localId) return true;
+        return false;
       } catch (_) {
         return false;
       }
@@ -92,6 +111,50 @@ Future<void> deleteLocalReceiptByLocalId(String localId) async {
     try {
       receiptsRevision.value++;
     } catch (_) {}
+  } catch (_) {}
+}
+
+/// Mark a local receipt as hidden instead of removing it. This preserves a
+/// backup of the original parsed/envelope but hides it from `getLocalReceipts()`
+/// so the user won't see the original after editing.
+Future<void> markLocalReceiptHidden(String localId) async {
+  try {
+    final f = await _ensureStorageFile();
+    if (f == null) return;
+    final content = await f.readAsString();
+    final List<dynamic> list = (content.trim().isEmpty) ? [] : jsonDecode(content) as List<dynamic>;
+    bool changed = false;
+    final updated = list.map((e) {
+      try {
+        final m = Map<String, dynamic>.from(e as Map);
+          final id = (m['local_id'] ?? m['localId'] ?? m['local-id'])?.toString();
+          if (id == localId) {
+            m['_hidden'] = true;
+            changed = true;
+          } else {
+            // also support matching by DB-saved id (`_saved.id`) or top-level `id`
+            try {
+              final savedId = (m['_saved'] is Map) ? (m['_saved']['id']) : null;
+              if (savedId != null && savedId.toString() == localId) {
+                m['_hidden'] = true;
+                changed = true;
+              }
+            } catch (_) {}
+            final topId = m['id']?.toString();
+            if (!changed && topId != null && topId == localId) {
+              m['_hidden'] = true;
+              changed = true;
+            }
+          }
+        return m;
+      } catch (_) {
+        return e;
+      }
+    }).toList();
+    if (changed) {
+      await f.writeAsString(const JsonEncoder().convert(updated));
+      try { receiptsRevision.value++; } catch (_) {}
+    }
   } catch (_) {}
 }
 
@@ -116,6 +179,40 @@ Future<void> setVisibleCategories(List<String> cats) async {
     final dir = await getApplicationDocumentsDirectory();
     final f = File('${dir.path}/settings.json');
     final Map<String, dynamic> data = {'visible_categories': cats};
+    await f.writeAsString(const JsonEncoder().convert(data));
+  } catch (_) {}
+}
+
+/// Budgets are stored inside `settings.json` under the key `budgets`.
+Future<Map<String, dynamic>?> getBudgets() async {
+  try {
+    final dir = await getApplicationDocumentsDirectory();
+    final f = File('${dir.path}/settings.json');
+    if (!await f.exists()) return null;
+    final content = await f.readAsString();
+    if (content.trim().isEmpty) return null;
+    final Map<String, dynamic> data = jsonDecode(content) as Map<String, dynamic>;
+    final b = data['budgets'];
+    if (b == null) return null;
+    if (b is Map) return Map<String, dynamic>.from(b as Map);
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
+Future<void> setBudgets(Map<String, dynamic> budgets) async {
+  try {
+    final dir = await getApplicationDocumentsDirectory();
+    final f = File('${dir.path}/settings.json');
+    Map<String, dynamic> data = {};
+    if (await f.exists()) {
+      final content = await f.readAsString();
+      if (content.trim().isNotEmpty) {
+        data = jsonDecode(content) as Map<String, dynamic>;
+      }
+    }
+    data['budgets'] = budgets;
     await f.writeAsString(const JsonEncoder().convert(data));
   } catch (_) {}
 }
