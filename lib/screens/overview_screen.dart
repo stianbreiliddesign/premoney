@@ -6,6 +6,7 @@ import '../local_storage.dart';
 import '../services/receipt_db.dart';
 import 'history_screen.dart';
 import 'add_receipt_screen.dart';
+import 'budget_screen.dart';
 
 class OverviewScreen extends StatefulWidget {
   const OverviewScreen({super.key});
@@ -22,6 +23,7 @@ class _OverviewScreenState extends State<OverviewScreen> {
   List<dynamic>? receipts;
   Map<String, double> categorySums = {};
   List<String> visibleCategories = [];
+  Map<String, dynamic> budgets = {};
 
   final String baseUrl = 'https://receipt-ai-backend.onrender.com/receipts';
 
@@ -173,6 +175,12 @@ class _OverviewScreenState extends State<OverviewScreen> {
         visibleCategories = categories.where((k) => k != 'all').toList();
       }
       await fetchOverview(detail: true);
+      try {
+        final b = await getBudgets();
+        setState(() {
+          budgets = b ?? {};
+        });
+      } catch (_) {}
       if ((receipts == null || receipts!.isEmpty)) {
         // Try SQLite DB first (new flow), then fallback to file-based local storage
         try {
@@ -635,6 +643,20 @@ class _OverviewScreenState extends State<OverviewScreen> {
     final isNarrow = MediaQuery.of(context).size.width < 420;
     return Scaffold(
       appBar: AppBar(title: const Text('Oversikt'), actions: [
+        IconButton(
+          tooltip: 'Budsjett',
+          icon: const Icon(Icons.account_balance_wallet_outlined),
+          onPressed: () async {
+            final changed = await Navigator.push<bool?>(context, MaterialPageRoute(builder: (_) => const BudgetScreen()));
+            try {
+              final b = await getBudgets();
+              setState(() {
+                budgets = b ?? {};
+              });
+            } catch (_) {}
+            if (changed == true) await fetchOverview(detail: true);
+          },
+        ),
         IconButton(
           tooltip: 'Historikk',
           icon: const Icon(Icons.history),
